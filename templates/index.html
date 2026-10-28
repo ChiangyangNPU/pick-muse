@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>选号缪斯 · AI 彩票数据分析</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎰</text></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="theme-ssq">
+<div class="app">
+
+  <header class="hero">
+    <div class="hero-top">
+      <div class="hero-title">
+        <h1>选号缪斯 <span class="beta">AI</span></h1>
+        <p>官方开奖数据 · 统计分析 · 策略选号</p>
+      </div>
+      <button class="icon-btn ghost" id="btnSettings" title="大模型设置">⚙︎</button>
+    </div>
+    <div class="seg" id="gameSeg">
+      <button data-game="ssq" class="active">双色球</button>
+      <button data-game="dlt">大乐透</button>
+    </div>
+  </header>
+
+  <div class="data-bar" id="dataBar"></div>
+
+  <nav class="tabs" id="tabBar">
+    <button data-tab="predict" class="active">🎯<span>智能选号</span></button>
+    <button data-tab="stats">📊<span>数据统计</span></button>
+    <button data-tab="history">📜<span>历史开奖</span></button>
+    <button data-tab="mine">🎫<span>我的号码</span></button>
+  </nav>
+
+  <main>
+
+    <!-- 智能选号 -->
+    <section id="tab-predict" class="panel">
+      <div class="card">
+        <div class="card-head"><h2>选号策略</h2></div>
+        <div class="strategy-grid" id="strategyGrid"></div>
+        <div class="opt-row">
+          <label>统计窗口
+            <select id="windowSel">
+              <option value="30">近 30 期</option>
+              <option value="50" selected>近 50 期</option>
+              <option value="100">近 100 期</option>
+              <option value="200">近 200 期</option>
+            </select>
+          </label>
+          <label>注数
+            <select id="countSel">
+              <option value="1">1 注</option>
+              <option value="5" selected>5 注</option>
+              <option value="10">10 注</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>胆码与排除 <small class="sub">可选</small></h2></div>
+        <p class="hint">单击号码设为 <b class="gold">胆码（必出）</b>，再点一下 <b class="gray">排除</b>，第三下取消</p>
+        <div id="pickGrids"></div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn primary big" id="btnPredict">⚡ 生成智能选号</button>
+      </div>
+
+      <div class="card" id="predictResultCard" hidden>
+        <div class="card-head">
+          <h2>选号结果 <span class="sub" id="predictMeta"></span></h2>
+          <button class="link" id="btnSaveAll">全部保存</button>
+        </div>
+        <div id="predictResult"></div>
+        <div class="report-btn-row">
+          <button class="btn ghost" id="btnReport">🤖 生成 AI 分析报告</button>
+        </div>
+        <div class="report" id="reportBox" hidden></div>
+      </div>
+    </section>
+
+    <!-- 数据统计 -->
+    <section id="tab-stats" class="panel" hidden>
+      <div class="card">
+        <div class="card-head"><h2>号码频率</h2><span class="chip" id="statsMeta"></span></div>
+        <p class="hint">柱高 = 统计窗口内出现次数，虚线为平均线；红柱偏热、蓝柱偏冷</p>
+        <div id="freqCharts"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>冷热与遗漏</h2></div>
+        <div id="hotCold"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>和值走势</h2></div>
+        <div id="sumTrend"></div>
+        <p class="hint" id="sumInfo"></p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>形态分布</h2></div>
+        <div class="dist-grid" id="shapeDist"></div>
+      </div>
+    </section>
+
+    <!-- 历史开奖 -->
+    <section id="tab-history" class="panel" hidden>
+      <div class="card">
+        <div class="card-head"><h2>历史开奖</h2><span class="chip" id="histMeta"></span></div>
+        <div class="table-scroll" id="histTable"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="btnMoreHistory">加载更多</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 我的号码 -->
+    <section id="tab-mine" class="panel" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>我的号码 <span class="count" id="ticketCount"></span></h2>
+          <div class="mini-row">
+            <button class="link" id="btnCheckAll">🎯 对最新奖</button>
+            <button class="link" id="btnCopyAll">复制全部</button>
+            <button class="link danger" id="btnClearAll">清空</button>
+          </div>
+        </div>
+        <p class="hint">保存的号码存在本机浏览器里；「对最新奖」会拉取两种玩法最新一期开奖自动核对</p>
+        <div id="ticketList"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="foot">
+    <p>⚠️ 每期开奖相互独立且完全随机，任何历史统计与 AI 分析都<b>无法提高中奖概率</b>。</p>
+    <p>本工具仅供娱乐与学习 · 理性购彩 · 量力而行 · 未满 18 周岁禁止购彩</p>
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="modal-mask" id="settingsModal" hidden>
+  <div class="modal" role="dialog" aria-label="设置">
+    <h3>大模型分析设置 <small class="sub">可选</small></h3>
+    <p class="hint">配置任意 OpenAI 兼容接口后，「AI 分析报告」会调用大模型生成；不配置则使用内置统计报告。密钥只保存在本机 <code>data/settings.json</code>。</p>
+    <label>API 地址（Base URL）<input id="setBaseUrl" placeholder="https://open.bigmodel.cn/api/paas/v4" autocapitalize="off"></label>
+    <label>模型<input id="setModel" placeholder="glm-4-flash / gpt-4o-mini / deepseek-chat …" autocapitalize="off"></label>
+    <label>API Key<input id="setKey" type="password" placeholder="留空表示不修改"></label>
+    <p class="hint" id="keyState"></p>
+    <div class="modal-btns">
+      <button class="btn ghost" id="setTest">测试连接</button>
+      <button class="btn ghost" id="setClose">关闭</button>
+      <button class="btn primary" id="setSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

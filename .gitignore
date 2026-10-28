@@ -1,0 +1,10 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# 运行时数据（开奖缓存可再生；settings.json 可能含 API 密钥，严禁提交）
+data/
+
+# macOS
+.DS_Store
