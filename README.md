@@ -94,7 +94,7 @@ pick-muse/
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 Chiangyang
+[MIT](LICENSE) © 2026 chiangyang
 
 > 本项目仅供娱乐与学习。彩票有风险，请理性购彩。
 

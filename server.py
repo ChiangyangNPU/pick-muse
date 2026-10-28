@@ -10,6 +10,9 @@
 
 重要声明：彩票每期开奖相互独立且完全随机，任何历史统计都无法提高
 中奖概率。本工具仅供娱乐与学习，请理性购彩。
+
+作者：chiangyang
+许可证：MIT
 """
 import json
 import random
@@ -28,6 +31,7 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
+# 玩法配置：zones 按顺序 [主区, 副区]，min/max 为号码范围，pick 为应选个数
 GAMES = {
     "ssq": {
         "name": "双色球",
@@ -45,6 +49,7 @@ GAMES = {
     },
 }
 
+# 选号策略表（key 同时作为前端标识与 API 参数）
 STRATEGIES = {
     "smart": "综合评分",
     "hot": "热号追踪",
@@ -59,6 +64,7 @@ app = Flask(__name__)
 # ------------------------------------------------------------------ 数据抓取
 
 def _int(s):
+    """把带千分位逗号的数字字符串安全转为 int，失败返回 None。"""
     try:
         return int(str(s).replace(",", "").strip())
     except (TypeError, ValueError):
@@ -66,6 +72,16 @@ def _int(s):
 
 
 def fetch_ssq(count=200):
+    """抓取双色球历史开奖数据（中国福彩网公开接口）。
+
+    Args:
+        count: 抓取期数，默认 200。
+
+    Returns:
+        list[dict]: 开奖列表，最新在前。每期含 code 期号、date 日期、
+        nums 开奖号码、pool 奖池、sales 销量、first_count/first_money
+        一等奖注数与单注奖金；解析异常的期次自动跳过。
+    """
     url = ("https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice"
            f"?name=ssq&issueCount={count}&systemType=DB")
     r = requests.get(
@@ -99,6 +115,16 @@ def fetch_ssq(count=200):
 
 
 def fetch_dlt(pages=3, page_size=100):
+    """抓取大乐透历史开奖数据（中国体彩网公开接口，按页循环抓取）。
+
+    Args:
+        pages: 最多抓取页数，默认 3 页。
+        page_size: 每页期数，默认 100。
+
+    Returns:
+        list[dict]: 开奖列表，最新在前，字段含义同 fetch_ssq。
+        lotteryDrawResult 格式为 7 个空格分隔数字：前 5 个前区 + 后 2 个后区。
+    """
     draws = []
     for page in range(1, pages + 1):
         url = ("https://webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry"
@@ -117,6 +143,7 @@ def fetch_dlt(pages=3, page_size=100):
                 nums_all = [int(x) for x in it["lotteryDrawResult"].split()]
                 if len(nums_all) != 7:
                     continue
+                # prizeLevelList 中 group=101 为一等奖（含追加前置档）
                 first = next((p for p in it.get("prizeLevelList") or []
                               if str(p.get("group")) == "101"), {}) or {}
                 draws.append({
@@ -132,16 +159,28 @@ def fetch_dlt(pages=3, page_size=100):
                 continue
         if len(items) < page_size:
             break
-        time.sleep(0.4)
+        time.sleep(0.4)  # 翻页间稍作停顿，避免请求过快
     return draws
 
 
 def _cache_path(game):
+    """返回玩法对应的本地缓存文件路径（data/<game>.json）。"""
     return DATA_DIR / f"{game}.json"
 
 
 def get_draws(game, refresh=False):
-    """返回 (draws 最新在前, fetched_at)。网络失败时回退本地缓存。"""
+    """获取开奖数据（带本地缓存，网络失败时回退缓存）。
+
+    Args:
+        game: 玩法 key，"ssq" 或 "dlt"。
+        refresh: True 时忽略缓存有效期强制重新抓取。
+
+    Returns:
+        tuple[list[dict], float]: (开奖列表最新在前, 缓存时间戳)。
+
+    Raises:
+        RuntimeError: 既无网络数据也无本地缓存时抛出。
+    """
     cp = _cache_path(game)
     cache = None
     if cp.exists():
@@ -167,6 +206,7 @@ def get_draws(game, refresh=False):
 # ------------------------------------------------------------------ 统计分析
 
 def _percentile(sorted_vals, p):
+    """求已升序排列序列的 p 分位数（最近邻插值，p 取 0~100）。"""
     if not sorted_vals:
         return 0
     k = round(p / 100 * (len(sorted_vals) - 1))
@@ -174,6 +214,23 @@ def _percentile(sorted_vals, p):
 
 
 def compute_stats(draws, game_key, window):
+    """计算统计窗口内的全方位统计。
+
+    统计口径：
+      - freq       窗口内出现次数
+      - omission   当前遗漏（距最近一次出现隔了多少期；窗口内未出现 = 窗口长度）
+      - max_omission 窗口内最大连续遗漏
+      - hot/cold/overdue 热号 / 冷号 / 遗漏最久（各取 5 个）
+      - sum/odd_even/big_small/consecutive 仅针对主区（红球 / 前区）计算
+
+    Args:
+        draws: 开奖列表，最新在前。
+        game_key: 玩法 key。
+        window: 统计窗口期数（实际取 draws 前 window 期）。
+
+    Returns:
+        dict: 统计结果，直接作为 /api/stats 响应主体。
+    """
     game = GAMES[game_key]
     win = draws[:window]
     used = len(win)
@@ -197,12 +254,14 @@ def compute_stats(draws, game_key, window):
         for n in range(lo, hi + 1):
             # 当前遗漏：距最近一次出现隔了多少期；窗口内从未出现 = used
             omission[n] = last_seen.get(n, used)
+            # 最大遗漏：扫出现位置序列求相邻间隔的最大值（含首尾两段）
             g, prev = 0, -1
             for p in positions[n]:
                 g = max(g, p - prev - 1)
                 prev = p
             g = used if prev < 0 else max(g, used - 1 - prev)
             max_omission[n] = g
+        # 出现次数降序、同次数遗漏升序 => 热号优先；[::-1] 即冷号优先
         ordered = sorted(range(lo, hi + 1), key=lambda n: (-freq[n], omission[n]))
         cold = [n for n in ordered[::-1] if freq[n] == 0][:5] or ordered[::-1][:5]
         zones[k] = {
@@ -248,6 +307,17 @@ def compute_stats(draws, game_key, window):
 # ------------------------------------------------------------------ 策略选号
 
 def _weighted_sample(pool, weights, k, rng):
+    """不放回加权抽样：从 pool 中按权重抽出 k 个号码。
+
+    Args:
+        pool: 候选号码列表。
+        weights: 与 pool 等长的权重列表（权重越大被抽出概率越高）。
+        k: 抽取个数。
+        rng: random.Random 实例。
+
+    Returns:
+        list: 抽中的 k 个号码（顺序随机）。
+    """
     items = list(zip(pool, weights))
     picked = []
     for _ in range(k):
@@ -267,6 +337,19 @@ def _weighted_sample(pool, weights, k, rng):
 
 
 def _zone_weights(strategy, zstat, rng):
+    """按策略计算区域内每个号码的抽样权重。
+
+    smart / balanced 的副区：频率分 + 遗漏分 + 随机扰动，兼顾热号与回补；
+    hot 只看频率；cold 只看遗漏；random 全部等权。
+
+    Args:
+        strategy: 策略 key。
+        zstat: compute_stats 输出的单区域统计。
+        rng: random.Random 实例（用于 smart 的随机扰动）。
+
+    Returns:
+        dict[str, float]: 号码（字符串）-> 权重。
+    """
     freq, om = zstat["freq"], zstat["omission"]
     max_f = max(freq.values()) or 1
     max_o = max(om.values()) or 1
@@ -285,6 +368,23 @@ def _zone_weights(strategy, zstat, rng):
 
 
 def _pick_zone(zone, zstat, strategy, exclude, anchor, rng):
+    """生成单个区域的号码（胆码必出 + 剩余名额加权抽样）。
+
+    Args:
+        zone: 区域配置（GAMES 中的一项）。
+        zstat: 该区域的统计数据。
+        strategy: 策略 key。
+        exclude: 排除号码列表（不参与抽样）。
+        anchor: 胆码号码列表（强制入选）。
+        rng: random.Random 实例。
+
+    Returns:
+        tuple[list, dict]: (选中的号码列表, 选号依据)。依据为
+        号码 -> {freq, omission, score}，score 为该号权重归一化值。
+
+    Raises:
+        ValueError: 胆码超过应选个数，或排除后可用号码不足。
+    """
     lo, hi, k = zone["min"], zone["max"], zone["pick"]
     try:
         anchor = sorted({int(x) for x in anchor if lo <= int(x) <= hi})
@@ -313,6 +413,18 @@ def _pick_zone(zone, zstat, strategy, exclude, anchor, rng):
 
 
 def _gen(game, stats, strategy, exclude, anchor, rng):
+    """生成一注完整号码：对主区 / 副区分别调用 _pick_zone。
+
+    Args:
+        game: 玩法配置（GAMES 的值）。
+        stats: compute_stats 的完整输出。
+        strategy: 策略 key。
+        exclude / anchor: {区域key: 号码列表}。
+        rng: random.Random 实例。
+
+    Returns:
+        tuple[dict, dict]: ({区域key: 号码列表}, {区域key: 选号依据})。
+    """
     nums, reasons = {}, {}
     for zone in game["zones"]:
         n, r = _pick_zone(
@@ -325,6 +437,16 @@ def _gen(game, stats, strategy, exclude, anchor, rng):
 
 
 def _shape_ok(nums, p15, p85, odd_seen):
+    """形态均衡策略的组合校验：和值在历史分位区间、奇偶比出现过、连号不超 2 组。
+
+    Args:
+        nums: 主区号码（已升序）。
+        p15 / p85: 历史和值的 15 / 85 分位数。
+        odd_seen: 历史出现过的奇偶比集合（如 {"3:3", "2:4"}）。
+
+    Returns:
+        bool: 是否通过校验。
+    """
     s = sum(nums)
     if not (p15 <= s <= p85):
         return False
@@ -337,6 +459,7 @@ def _shape_ok(nums, p15, p85, odd_seen):
 # ------------------------------------------------------------------ LLM 报告
 
 def load_settings():
+    """读取 data/settings.json；文件不存在或损坏时返回空 dict。"""
     if SETTINGS_PATH.exists():
         try:
             return json.loads(SETTINGS_PATH.read_text("utf-8"))
@@ -346,15 +469,30 @@ def load_settings():
 
 
 def save_settings(s):
+    """把设置整体写回 data/settings.json。"""
     SETTINGS_PATH.write_text(json.dumps(s, ensure_ascii=False, indent=2), "utf-8")
 
 
 def llm_ready(s=None):
+    """判断大模型配置是否完整（Base URL / 模型 / API Key 均非空）。"""
     llm = (s or load_settings()).get("llm") or {}
     return bool(llm.get("api_key") and llm.get("base_url") and llm.get("model"))
 
 
 def call_llm(prompt, system, timeout=90):
+    """调用 OpenAI 兼容的 chat/completions 接口。
+
+    Args:
+        prompt: 用户消息（统计数据 JSON）。
+        system: 系统提示词（约束模型输出风格与免责要求）。
+        timeout: 请求超时秒数。
+
+    Returns:
+        str: 模型回复文本。
+
+    Raises:
+        requests.Exception / KeyError: 网络失败或响应格式异常时向上抛出。
+    """
     llm = load_settings().get("llm") or {}
     resp = requests.post(
         llm["base_url"].rstrip("/") + "/chat/completions",
@@ -374,10 +512,21 @@ def call_llm(prompt, system, timeout=90):
 
 
 def _balls(lst):
+    """把号码列表格式化为「01、02、03」样式的字符串。"""
     return "、".join(f"{n:0>2}" for n in lst)
 
 
 def builtin_report(game_key, stats, strategy_name):
+    """生成内置统计报告（未配置大模型时的降级方案）。
+
+    Args:
+        game_key: 玩法 key。
+        stats: compute_stats 输出（需已附加 latest 字段）。
+        strategy_name: 策略中文名。
+
+    Returns:
+        str: 纯文本报告，含数据快报、走势特征、策略解读与理性购彩提示。
+    """
     game = GAMES[game_key]
     main, sub = game["zones"][0], game["zones"][1]
     zs, ss = stats["zones"][main["key"]], stats["zones"][sub["key"]]
@@ -417,20 +566,24 @@ def builtin_report(game_key, stats, strategy_name):
 
 @app.get("/")
 def index():
+    """主页：渲染 templates/index.html。"""
     return render_template("index.html")
 
 
 @app.get("/api/games")
 def api_games():
+    """玩法与策略配置表，供前端初始化使用。"""
     return jsonify({"games": GAMES, "strategies": STRATEGIES})
 
 
 def _game_arg():
+    """解析请求参数中的 game，非法时返回 None。"""
     game = request.args.get("game", "ssq")
     return game if game in GAMES else None
 
 
 def _window_arg(default=50):
+    """解析请求参数中的 window（10~300 之间），异常时取默认值。"""
     try:
         return max(10, min(int(request.args.get("window", default)), 300))
     except (TypeError, ValueError):
@@ -439,6 +592,10 @@ def _window_arg(default=50):
 
 @app.get("/api/history")
 def api_history():
+    """历史开奖（分页）。
+
+    Query 参数：game / limit（1~300，默认 30）/ offset / refresh=1 强制刷新。
+    """
     game = _game_arg()
     if not game:
         return jsonify({"error": "未知玩法"}), 400
@@ -459,6 +616,7 @@ def api_history():
 
 @app.get("/api/latest")
 def api_latest():
+    """最新一期开奖（对奖用）。Query 参数：game。"""
     game = _game_arg()
     if not game:
         return jsonify({"error": "未知玩法"}), 400
@@ -471,6 +629,7 @@ def api_latest():
 
 @app.get("/api/stats")
 def api_stats():
+    """统计数据。Query 参数：game / window / refresh=1。"""
     game = _game_arg()
     if not game:
         return jsonify({"error": "未知玩法"}), 400
@@ -488,6 +647,15 @@ def api_stats():
 
 @app.post("/api/predict")
 def api_predict():
+    """策略选号。
+
+    Body（JSON）：game / strategy / count（1~10）/ window /
+    anchor / exclude（{区域key: [号码]}）。
+
+    Returns:
+        每注含 nums 号码、reasons 选号依据、features 形态特征；
+        balanced 策略会对主区做形态校验，不通过则整注重抽（最多 25 次）。
+    """
     body = request.get_json(silent=True) or {}
     game_key = body.get("game") if body.get("game") in GAMES else "ssq"
     strategy = body.get("strategy") if body.get("strategy") in STRATEGIES else "smart"
@@ -544,6 +712,11 @@ def api_predict():
 
 @app.post("/api/ai_report")
 def api_report():
+    """AI 分析报告：配置了大模型则调用 LLM，否则回退内置统计报告。
+
+    Body（JSON）：game / strategy / window。
+    系统提示词强制模型声明"开奖随机、不承诺中奖"。
+    """
     body = request.get_json(silent=True) or {}
     game_key = body.get("game") if body.get("game") in GAMES else "ssq"
     strategy = body.get("strategy") if body.get("strategy") in STRATEGIES else "smart"
@@ -590,6 +763,7 @@ def api_report():
 
 @app.get("/api/settings")
 def api_get_settings():
+    """读取大模型配置。安全起见不回传完整密钥，只回显尾号。"""
     llm = load_settings().get("llm") or {}
     key = llm.get("api_key") or ""
     return jsonify({"llm": {
@@ -602,6 +776,7 @@ def api_get_settings():
 
 @app.post("/api/settings")
 def api_set_settings():
+    """保存大模型配置。api_key 为空表示保持原值不变，clear_key 清除密钥。"""
     body = request.get_json(silent=True) or {}
     s = load_settings()
     llm = s.get("llm") or {}
@@ -620,6 +795,7 @@ def api_set_settings():
 
 @app.post("/api/llm_test")
 def api_llm_test():
+    """大模型连通性测试：发一条最小消息，验证配置是否可用。"""
     if not llm_ready():
         return jsonify({"ok": False, "error": "请先填写完整的 Base URL / 模型 / API Key"}), 400
     try:

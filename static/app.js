@@ -1,13 +1,34 @@
+/**
+ * 选号缪斯 PickMuse — 前端逻辑
+ *
+ * 单页应用：智能选号 / 数据统计 / 历史开奖 / 我的号码 四个标签页。
+ * 与后端（server.py）通过 /api/* 接口交互，票据数据存 localStorage。
+ *
+ * 作者：chiangyang
+ * 许可证：MIT
+ */
 'use strict';
 
-/* 选号缪斯 PickMuse — 前端逻辑 */
+/* ---------------------------------------------------------------- 工具函数 */
 
+/** 在指定作用域内查找第一个匹配选择器的元素。 */
 const $ = (s, el = document) => el.querySelector(s);
+/** 在指定作用域内查找所有匹配选择器的元素，返回数组。 */
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+/** 数字补零到两位：7 -> "07"。 */
 const fmt2 = n => String(n).padStart(2, '0');
+/** 数字补零到两位（用于时间）。 */
 const pad = n => String(n).padStart(2, '0');
+/** 生成短随机 id（时间戳 + 随机串），用于票据标识。 */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
+/**
+ * 创建 DOM 元素的快捷方法。
+ * @param {string} tag - 标签名。
+ * @param {string} [cls] - class 属性，空串表示无。
+ * @param {string} [text] - 文本内容，null/undefined 表示不设置。
+ * @returns {HTMLElement}
+ */
 function el(tag, cls = '', text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -15,6 +36,12 @@ function el(tag, cls = '', text) {
   return e;
 }
 
+/* ---------------------------------------------------------------- 常量配置 */
+
+/**
+ * 玩法配置（与后端 GAMES 保持一致）。
+ * zones 按顺序 [主区, 副区]；cls 为号码球配色 class。
+ */
 const GAMES = {
   ssq: {
     name: '双色球',
@@ -32,6 +59,7 @@ const GAMES = {
   },
 };
 
+/** 选号策略（key 与后端 STRATEGIES 一致）。 */
 const STRATEGIES = {
   smart: { name: '综合评分', desc: '频率 + 遗漏加权评分' },
   hot: { name: '热号追踪', desc: '跟随近期高频号码' },
@@ -40,13 +68,21 @@ const STRATEGIES = {
   random: { name: '完全随机', desc: '等同机选' },
 };
 
+/** 中奖等级名称表（下标即等级，0 = 未中奖）。 */
 const PRIZE_NAME = ['未中奖', '一等奖', '二等奖', '三等奖', '四等奖',
   '五等奖', '六等奖', '七等奖', '八等奖', '九等奖'];
 
+/**
+ * 计算一张票对某期开奖的中奖等级。
+ * @param {string} game - 玩法 key（ssq / dlt）。
+ * @param {Object} tNums - 票面号码 {区域key: number[]}。
+ * @param {Object} dNums - 开奖号码 {区域key: number[]}。
+ * @returns {number} 0~9，0 表示未中奖。
+ */
 function prizeLevel(game, tNums, dNums) {
   const m = GAMES[game].zones.map(z =>
     tNums[z.key].filter(n => dNums[z.key].includes(n)).length);
-  const a = m[0], b = m[1];
+  const a = m[0], b = m[1]; // a = 主区命中数，b = 副区命中数
   if (game === 'ssq') {
     if (a === 6 && b === 1) return 1;
     if (a === 6) return 2;
@@ -68,12 +104,27 @@ function prizeLevel(game, tNums, dNums) {
   return 0;
 }
 
+/**
+ * 创建某玩法的胆码/排除状态容器。
+ * @param {string} game - 玩法 key。
+ * @returns {Object} {区域key: Map<号码, 'anchor'|'exclude'>}。
+ */
 function mkSmart(game) {
   const o = {};
-  for (const z of GAMES[game].zones) o[z.key] = new Map(); // 号码 -> anchor | exclude
+  for (const z of GAMES[game].zones) o[z.key] = new Map();
   return o;
 }
 
+/* ---------------------------------------------------------------- 全局状态 */
+
+/**
+ * 页面全局状态。
+ * smart：每个玩法每个区域的胆码/排除（Map，号码 -> 'anchor' | 'exclude'）
+ * stats：当前玩法的 /api/stats 响应
+ * hist / histDone：历史开奖已加载数据与是否加载完
+ * lastPicks：最近一次生成的选号结果
+ * checkInfo：对奖信息 {ssq: /api/latest响应, dlt: ...}，null 表示未对奖
+ */
 const state = {
   game: 'ssq',
   tab: 'predict',
@@ -89,13 +140,21 @@ const state = {
   checkInfo: null,
 };
 
+/** 已保存的票据（{id, game, nums, time, source}），从 localStorage 恢复。 */
 let tickets = [];
 try { tickets = JSON.parse(localStorage.getItem('pickmuse.tickets') || '[]'); } catch (e) { /* 忽略损坏数据 */ }
+
+/** 把票据列表写回 localStorage。 */
 function saveTickets() { localStorage.setItem('pickmuse.tickets', JSON.stringify(tickets)); }
 
-/* ---------------- 通用 ---------------- */
+/* ---------------------------------------------------------------- 通用工具 */
 
 let toastTimer;
+
+/**
+ * 底部气泡提示，2.2 秒后自动消失；连续调用会重置计时。
+ * @param {string} msg - 提示文案。
+ */
 function toast(msg) {
   const t = $('#toast');
   t.textContent = msg;
@@ -104,6 +163,13 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
 }
 
+/**
+ * 请求后端接口的统一封装。
+ * @param {string} path - 接口路径（含查询串）。
+ * @param {Object} [opts] - fetch 参数（method/headers/body 等）。
+ * @returns {Promise<any>} 解析后的 JSON。
+ * @throws {Error} 非 2xx 或响应带 error 字段时抛出（message 已是用户可读文案）。
+ */
 async function api(path, opts = {}) {
   const r = await fetch(path, opts);
   let d = null;
@@ -112,11 +178,13 @@ async function api(path, opts = {}) {
   return d;
 }
 
+/** 时间戳 -> "MM-DD HH:mm"。 */
 function fmtTime(ts) {
   const d = new Date(ts);
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** 金额格式化：844.8 万 / 10.79 亿；空值返回 "—"。 */
 function fmtMoney(v) {
   if (v == null) return '—';
   return v >= 1e8 ? (v / 1e8).toFixed(2) + ' 亿'
@@ -124,11 +192,22 @@ function fmtMoney(v) {
     : String(v);
 }
 
+/**
+ * 生成一个实心号码球元素。
+ * @param {string} cls - 区域配色 class（z-red / z-blue / ...）。
+ * @param {number} n - 号码。
+ * @param {string} [extra] - 附加 class（如 'pop' 'hit'）。
+ * @returns {HTMLSpanElement}
+ */
 function ballSpan(cls, n, extra = '') {
   const s = el('span', `ball filled ${cls} ${extra}`.trim(), fmt2(n));
   return s;
 }
 
+/**
+ * 复制文本到剪贴板（clipboard API 失败时回退 execCommand）。
+ * @param {string} text - 要复制的文本。
+ */
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
@@ -144,11 +223,21 @@ async function copyText(text) {
   }
 }
 
+/**
+ * 票据转为单行文本，如 "双色球 04 05 20 21 26 30 + 12"。
+ * @param {Object} t - 票据对象。
+ * @returns {string}
+ */
 function ticketText(t) {
   return GAMES[t.game].name + ' ' +
     GAMES[t.game].zones.map(z => t.nums[z.key].map(fmt2).join(' ')).join(' + ');
 }
 
+/**
+ * 极简 Markdown 渲染（用于 AI 报告）：转义 HTML、加粗、换行。
+ * @param {string} text - 报告原文。
+ * @returns {string} HTML 片段。
+ */
 function mdLite(text) {
   return text
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -157,8 +246,13 @@ function mdLite(text) {
     .join('<br><br>');
 }
 
-/* ---------------- 数据加载 ---------------- */
+/* ---------------------------------------------------------------- 数据加载 */
 
+/**
+ * 渲染顶部数据状态条。
+ * @param {boolean} [loading] - 加载中状态。
+ * @param {string} [err] - 错误文案（与 loading 互斥）。
+ */
 function renderDataBar(loading, err) {
   const bar = $('#dataBar');
   if (loading) { bar.innerHTML = '<span class="dot loading"></span>正在获取官方开奖数据…'; return; }
@@ -177,6 +271,11 @@ function renderDataBar(loading, err) {
   $('#btnRefreshData').addEventListener('click', () => loadData(true));
 }
 
+/**
+ * 加载当前玩法的统计数据与历史开奖首屏，并渲染相关标签页。
+ * 期间切换玩法会使本函数的渲染结果被丢弃（防串台）。
+ * @param {boolean} [refresh] - True 时带 refresh=1 强制后端重新抓取。
+ */
 async function loadData(refresh = false) {
   const game = state.game;
   renderDataBar(true);
@@ -200,6 +299,11 @@ async function loadData(refresh = false) {
   }
 }
 
+/**
+ * 切换玩法：更新主题配色 / 胆码网格 / 各页签内容，并重新加载数据。
+ * 玩法偏好会记入 localStorage。
+ * @param {string} game - 目标玩法 key。
+ */
 function switchGame(game) {
   state.game = game;
   state.report = null;
@@ -214,6 +318,10 @@ function switchGame(game) {
   loadData();
 }
 
+/**
+ * 切换功能标签页；进入历史页时若无数据会触发一次加载。
+ * @param {string} tab - 目标标签 key（predict/stats/history/mine）。
+ */
 function switchTab(tab) {
   state.tab = tab;
   $$('#tabBar button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
@@ -222,8 +330,9 @@ function switchTab(tab) {
   if (tab === 'mine') renderTickets();
 }
 
-/* ---------------- 智能选号 ---------------- */
+/* ---------------------------------------------------------------- 智能选号 */
 
+/** 渲染策略选择卡片（当前策略高亮），点击切换并记入 localStorage。 */
 function renderStrategies() {
   const host = $('#strategyGrid');
   host.innerHTML = '';
@@ -240,6 +349,12 @@ function renderStrategies() {
   }
 }
 
+/**
+ * 构建一个区域的三态号码网格（单击胆码 -> 再点排除 -> 第三下取消）。
+ * 胆码数量达到该区应选个数后拒绝继续添加。
+ * @param {Object} zone - 区域配置（GAMES 内一项）。
+ * @returns {HTMLElement} .zone 区块元素。
+ */
 function buildSmartZone(zone) {
   const m = state.smart[state.game][zone.key];
   const wrap = el('div', 'zone ' + zone.cls);
@@ -274,12 +389,17 @@ function buildSmartZone(zone) {
   return wrap;
 }
 
+/** 渲染「胆码与排除」区域（当前玩法的所有区域网格）。 */
 function renderPickGrids() {
   const host = $('#pickGrids');
   host.innerHTML = '';
   for (const z of GAMES[state.game].zones) host.append(buildSmartZone(z));
 }
 
+/**
+ * 调用 /api/predict 生成智能选号。
+ * 把当前玩法的胆码 / 排除状态整理进请求体；期间切换玩法则丢弃结果。
+ */
 async function runPredict() {
   const game = state.game;
   const body = {
@@ -314,6 +434,7 @@ async function runPredict() {
   }
 }
 
+/** 渲染选号结果卡片；无结果时隐藏。 */
 function renderPredictResult() {
   const card = $('#predictResultCard');
   const picks = state.lastPicks;
@@ -328,6 +449,12 @@ function renderPredictResult() {
   $('#reportBox').hidden = true;
 }
 
+/**
+ * 构建单注选号结果行：号码球（带逐个弹出动画）+ 特征 + 保存按钮 + 可展开的选号依据。
+ * @param {Object} p - 选号结果（含 nums/reasons/features）。
+ * @param {number} idx - 序号（用于「第 N 注」标签）。
+ * @returns {HTMLElement} .pick-row 元素。
+ */
 function pickRow(p, idx) {
   const row = el('div', 'pick-row');
   const head = el('div', 'pick-head');
@@ -370,8 +497,14 @@ function pickRow(p, idx) {
   return row;
 }
 
+/** 判断某注选号是否已保存（按 id 匹配）。 */
 function isSaved(id) { return tickets.some(t => t.id === id); }
 
+/**
+ * 把一注选号保存到「我的号码」。
+ * @param {Object} p - 选号结果。
+ * @param {HTMLElement} [btn] - 保存按钮（成功后更新为已保存态）。
+ */
 function savePick(p, btn) {
   if (isSaved(p.id)) return;
   tickets.unshift({
@@ -387,6 +520,10 @@ function savePick(p, btn) {
   toast('已保存到「我的号码」');
 }
 
+/**
+ * 调用 /api/ai_report 生成分析报告。
+ * 未配置大模型时后端返回内置统计报告；结果以极简 Markdown 渲染。
+ */
 async function runReport() {
   const btn = $('#btnReport');
   btn.disabled = true;
@@ -411,8 +548,9 @@ async function runReport() {
   }
 }
 
-/* ---------------- 数据统计 ---------------- */
+/* ---------------------------------------------------------------- 数据统计 */
 
+/** 渲染「数据统计」标签页：频率图、冷热遗漏、和值走势、形态分布。 */
 function renderStatsTab() {
   const s = state.stats;
   if (!s) return;
@@ -432,6 +570,14 @@ function renderStatsTab() {
   renderShapeDist(s);
 }
 
+/**
+ * 生成单区域号码频率 SVG 柱状图。
+ * 柱高 = 出现次数；按频率比例着色（>=72% 偏热、<=34% 偏冷、其余一般）；
+ * 虚线为平均线；每根柱带原生 title 提示（次数 + 遗漏）。
+ * @param {Object} zone - 区域配置。
+ * @param {Object} zstat - 该区域统计（freq / omission）。
+ * @returns {string} SVG 标记字符串。
+ */
 function freqChartSVG(zone, zstat) {
   const lo = zone.min, hi = zone.max, n = hi - lo + 1;
   const W = 760, H = 210, padL = 30, padR = 8, padT = 14, padB = 30;
@@ -465,6 +611,13 @@ function freqChartSVG(zone, zstat) {
   return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img">${grid}${bars}${labels}</svg>`;
 }
 
+/**
+ * 构建一行号码胶囊（热号 / 冷号 / 遗漏榜共用）。
+ * @param {string} label - 行标签（如 "🔥 热号"）。
+ * @param {Array<{n:number,t:string}>} items - 号码与角标文案。
+ * @param {string} cls - 胶囊配色 class（hot-chip / cold-chip / over-chip）。
+ * @returns {HTMLElement} .chip-row 元素。
+ */
 function chipRow(label, items, cls) {
   const row = el('div', 'chip-row');
   row.append(el('span', 'chip-label', label));
@@ -478,6 +631,7 @@ function chipRow(label, items, cls) {
   return row;
 }
 
+/** 渲染冷热与遗漏榜（每个区域一块：热号 / 冷号 / 遗漏最久）。 */
 function renderHotCold(s) {
   const host = $('#hotCold');
   host.innerHTML = '';
@@ -492,6 +646,7 @@ function renderHotCold(s) {
   }
 }
 
+/** 渲染主区和值走势折线（旧 -> 新，从左到右），含均值虚线与面积填充。 */
 function renderSumTrend(s) {
   const host = $('#sumTrend');
   host.innerHTML = '';
@@ -524,6 +679,13 @@ function renderSumTrend(s) {
     `近 ${s.window_used} 期${zone0.name}和值：均值 <b>${s.sum.mean}</b> · 常见区间 <b>${s.sum.p15} ~ ${s.sum.p85}</b> · 最新 <b>${vals[vals.length - 1]}</b>（虚线为均值）`;
 }
 
+/**
+ * 构建一组水平分布条形（奇偶比 / 大小比 / 连号组数共用）。
+ * @param {string} title - 小标题。
+ * @param {Object} obj - {取值: 出现期数}。
+ * @param {string} [unit] - 数值单位，默认 "期"。
+ * @returns {HTMLElement} .dist-block 元素。
+ */
 function distBlock(title, obj, unit = '期') {
   const entries = Object.entries(obj).sort((a, b) => b[1] - a[1]);
   const max = entries.length ? entries[0][1] : 1;
@@ -538,6 +700,7 @@ function distBlock(title, obj, unit = '期') {
   return blk;
 }
 
+/** 渲染形态分布：主区奇偶比、大小比、连号组数三组条形。 */
 function renderShapeDist(s) {
   const host = $('#shapeDist');
   host.innerHTML = '';
@@ -547,8 +710,12 @@ function renderShapeDist(s) {
   host.append(distBlock('连号组数', s.consecutive));
 }
 
-/* ---------------- 历史开奖 ---------------- */
+/* ---------------------------------------------------------------- 历史开奖 */
 
+/**
+ * 加载历史开奖（首页 30 期或「加载更多」追加分页）。
+ * @param {boolean} [more] - True 表示追加下一页。
+ */
 async function loadHistory(more = false) {
   const game = state.game;
   const offset = more ? state.hist[game].length : 0;
@@ -563,6 +730,7 @@ async function loadHistory(more = false) {
   }
 }
 
+/** 渲染历史开奖表格（期号 / 日期 / 开奖号码 / 一等奖 / 奖池）。 */
 function renderHistoryTab() {
   const game = state.game;
   const host = $('#histTable');
@@ -594,8 +762,9 @@ function renderHistoryTab() {
   $('#btnMoreHistory').hidden = state.histDone[game];
 }
 
-/* ---------------- 我的号码 ---------------- */
+/* ---------------------------------------------------------------- 我的号码 */
 
+/** 渲染「我的号码」列表；无票据时展示空态提示。 */
 function renderTickets() {
   $('#ticketCount').textContent = tickets.length ? `${tickets.length} 注` : '';
   const host = $('#ticketList');
@@ -607,6 +776,13 @@ function renderTickets() {
   for (const t of tickets) host.append(ticketRow(t));
 }
 
+/**
+ * 构建单张票据行。
+ * 若已对奖（state.checkInfo 有对应玩法）：命中号码加金色描边，
+ * 并显示中奖等级徽章与 "中 x+y" 命中数。
+ * @param {Object} t - 票据对象。
+ * @returns {HTMLElement} .ticket-row 元素。
+ */
 function ticketRow(t) {
   const row = el('div', 'ticket-row');
   const main = el('div', 'ticket-main');
@@ -650,6 +826,10 @@ function ticketRow(t) {
   return row;
 }
 
+/**
+ * 「对最新奖」：并行拉取两种玩法最新一期开奖，
+ * 对全部票据计算中奖等级并重新渲染（命中号高亮 + 等级徽章）。
+ */
 async function checkAll() {
   if (!tickets.length) { toast('还没有保存的号码'); return; }
   try {
@@ -665,8 +845,11 @@ async function checkAll() {
   }
 }
 
-/* ---------------- 设置 ---------------- */
+/* ---------------------------------------------------------------- 设置 */
 
+/**
+ * 打开设置弹窗并回填当前大模型配置（密钥只显示尾号状态，不回填明文）。
+ */
 async function openSettings() {
   const m = $('#settingsModal');
   m.hidden = false;
@@ -682,6 +865,10 @@ async function openSettings() {
   }
 }
 
+/**
+ * 保存大模型配置到后端（data/settings.json）。
+ * 密钥输入框留空表示不修改原有密钥。
+ */
 async function saveSettings() {
   const body = {
     base_url: $('#setBaseUrl').value.trim(),
@@ -702,6 +889,10 @@ async function saveSettings() {
   }
 }
 
+/**
+ * 测试大模型连通性：先把表单里的配置发给后端试连（不改存量配置），
+ * 成功则提示，失败则显示错误原因。
+ */
 async function testLlm() {
   const btn = $('#setTest');
   btn.disabled = true;
@@ -725,8 +916,12 @@ async function testLlm() {
   }
 }
 
-/* ---------------- 初始化 ---------------- */
+/* ---------------------------------------------------------------- 初始化 */
 
+/**
+ * 应用入口：恢复本地偏好（玩法 / 策略 / 窗口 / 注数），
+ * 绑定所有事件，渲染初始界面并加载首个玩法的数据。
+ */
 function init() {
   const savedGame = localStorage.getItem('pickmuse.game');
   if (GAMES[savedGame]) state.game = savedGame;

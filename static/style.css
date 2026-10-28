@@ -1,4 +1,9 @@
-/* 选号缪斯 PickMuse — 样式 */
+/* 选号缪斯 PickMuse — 样式
+ * 主题：暖纸底 + 红金点缀；theme-ssq / theme-dlt 切换强调色。
+ * 作者：chiangyang · 许可证：MIT
+ */
+
+/* ---------- 设计变量 ---------- */
 :root {
   --bg: #f6f3ec;
   --card: #fffdf9;

@@ -100,7 +100,7 @@ pick-muse/
 
 ## License
 
-[MIT](LICENSE) © 2026 Chiangyang
+[MIT](LICENSE) © 2026 chiangyang
 
 > This project is for entertainment and learning only. Lotteries carry risk —
 > play responsibly.
