@@ -5,6 +5,14 @@ AI 彩票数据分析与选号工具（本地运行，支持**双色球**与**�
 自动抓取官方公开开奖数据，做频率 / 遗漏 / 冷热 / 形态统计分析，
 提供多种策略的智能选号，并可接入大模型生成分析报告。
 
+**English** — PickMuse is a local-first lottery analysis & number-picking tool
+for China's **SSQ (双色球)** and **DLT (大乐透)** lotteries. It fetches official
+public draw results, computes frequency / omission / hot-cold / sum / pattern
+statistics, generates explainable picks via five strategies, and can produce
+LLM-powered analysis reports through any OpenAI-compatible API.
+For entertainment only — every draw is an independent random event, and no
+analysis can improve winning odds.
+
 > ⚠️ **重要说明**：彩票每期开奖相互独立且完全随机，任何历史统计与 AI 分析
 > **都无法提高中奖概率**。本工具仅供娱乐与学习，请理性购彩、量力而行，
 > 未满 18 周岁禁止购彩。
